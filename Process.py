@@ -4,13 +4,7 @@ from typing import Callable
 
 from pyeventbus3.pyeventbus3 import *
 
-# from EventBus import EventBus
 from Message import Message, BroadcastMessage, MessageTo, Token, TokenState, SyncingMessage
-
-
-# from geeteventbus.subscriber import subscriber
-# from geeteventbus.eventbus import eventbus
-# from geeteventbus.event import event
 
 
 def mod(x: int, y: int) -> int:
@@ -136,8 +130,9 @@ class Process(Thread):
 
     def doCriticalAction(self, funcToCall: Callable, args: list):
         self.requestToken()
-        funcToCall(*args)
-        self.releaseToken()
+        if self.alive:
+            funcToCall(*args)
+            self.releaseToken()
 
     def criticalActionWarning(self, msg: str):
         print("THIS IS A CRITICAL ACTION, TOKEN IN USE BY", self.name, "; A MESSAGE FROM THE LOOP :", msg)
