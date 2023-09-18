@@ -114,6 +114,13 @@ class Process(Thread):
 
     @subscribe(threadMode=Mode.PARALLEL, onEvent=Token)
     def onToken(self, event: Token):
+        """
+        Ici le token est en mouvement continu. Il s'arrête lorsqu'un processus le demande sur une section critique.
+        self.isSyncing est la afin de savoir si un processus est en attente de synchronisation, mais n'a pas encore reçu le token.
+        self.nbSync est la pour savoir combien de processus sont en attente de synchronisation actuellement. S'il vaut 0, alors on
+        peut envoyer un message de synchronisation s'il était en attente de synchronisation.
+        self.token_state est la pour connaître la possession du token. Cf TokenState.
+        """
         if event.to_process == self.myId:
             self.receiveMessage(event, verbosityThreshold=8)
             if not self.alive:
@@ -129,12 +136,19 @@ class Process(Thread):
             self.releaseToken()
 
     def doCriticalAction(self, funcToCall: Callable, args: list):
+        """
+        Afin de faire une action critique, on demande le token, on fait l'action, puis on le relâche.
+        Ici l'action critique est une fonction passée en paramètre avec la liste des arguments.
+        """
         self.requestToken()
         if self.alive:
             funcToCall(*args)
             self.releaseToken()
 
     def criticalActionWarning(self, msg: str):
+        """
+        Ici l'action critique est un print d'un message, mais on pourrait imaginer que ce soit un accès à une ressource partagée comme un fichier.
+        """
         print("THIS IS A CRITICAL ACTION, TOKEN IN USE BY", self.name, "; A MESSAGE FROM THE LOOP :", msg)
 
     def synchronize(self):

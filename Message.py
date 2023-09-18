@@ -32,6 +32,12 @@ class Token(Message):
 
 
 class TokenState(Enum):
+    """
+    Null: pas de token et pas de demande de token
+    Requested: demande de token en cours
+    SC: processus en section critique
+    Release: relâche du token en cours
+    """
     Null = 1
     Requested = 2
     SC = 3
