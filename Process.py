@@ -1,55 +1,84 @@
-import random
+from threading import Thread
 from time import sleep
 
-from pyeventbus3.pyeventbus3 import *
-
 from Com import Com
-from Utils import printer
 
 
 class Process(Thread):
-    nbProcessCreated = 0
 
-    def __init__(self, name: str, nbProcess: int):
+    def __init__(self, name, nbProcess):
         Thread.__init__(self)
 
-        self.nbProcess = nbProcess
-        self.myId = Process.nbProcessCreated
-        Process.nbProcessCreated += 1
+        self.com = Com(nbProcess)
+
+        self.nbProcess = self.com.getNbProcess()
+
+        self.myId = self.com.getMyId()
         self.name = name
-        self.com = Com()
 
-        PyBus.Instance().register(self, self)
-
-        self.alive = True
         self.start()
 
     def run(self):
-        while self.nbProcess != Process.nbProcessCreated:
-            pass
-        if self.myId == 0:
-            self.com.releaseToken()
-        self.com.synchronize()
         loop = 0
-        while self.alive:
-            printer(2, [self.name, "Loop:", loop, "; Internal Clock:", self.com.horloge])
+        while self.com.alive:
+            print(self.name + " Loop: " + str(loop))
             sleep(1)
 
-            if self.name == "P1":
-                self.com.sendTo("P2", "ga")
-                self.com.doCriticalAction(self.criticalActionWarning, ["lol"])
-            if self.name == "P2":
-                self.com.broadcast("JE SUIS LA, JE M APPELLE P2")
-            if self.name == "P3":
-                receiver = str(random.randint(0, self.nbProcess - 1))
-                self.com.sendTo("P" + receiver, "Je suis un spam, j'adore parler à toi, mon cher P" + receiver)
+            if self.myId == 0:
+                self.com.sendTo("j'appelle 2 et je te recontacte après", 1)
+
+                self.com.sendToSync(
+                    "J'ai laissé un message à 2, je le rappellerai après, on se sychronise tous et on attaque la partie ?",
+                    2)
+                self.com.recevFromSync(2)
+
+                self.com.sendToSync("2 est OK pour jouer, on se synchronise et c'est parti!", 1)
+
+                self.com.synchronize()
+
+                self.com.requestSC()
+                if self.com.mailbox.isEmpty():
+                    print("Catched !")
+                    self.com.broadcast("J'ai gagné !!!")
+                else:
+                    msg = self.com.mailbox.getMsg()
+                    print(msg.getSender(), "a eu le jeton en premier")
+                self.com.releaseSC()
+
+            if self.myId == 1:
+                if not self.com.mailbox.isEmpty():
+                    self.com.mailbox.getMsg()
+                    self.com.recevFromSync(0)
+
+                    self.com.synchronize()
+
+                    self.com.requestSC()
+                    if self.com.mailbox.isEmpty():
+                        print("Catched !")
+                        self.com.broadcast("J'ai gagné !!!")
+                    else:
+                        msg = self.com.mailbox.getMsg()
+                        print(msg.getSender(), "a eu le jeton en premier")
+                    self.com.releaseSC()
+
+            if self.myId == 2:
+                self.com.recevFromSync(0)
+                self.com.sendToSync("OK", 0)
+
+                self.com.synchronize()
+
+                self.com.requestSC()
+                if self.com.mailbox.isEmpty():
+                    print("Catched !")
+                    self.com.broadcast("J'ai gagné !!!")
+                else:
+                    msg = self.com.mailbox.getMsg()
+                    print(msg.getSender(), "a eu le jeton en premier")
+                self.com.releaseSC()
+
             loop += 1
-        sleep(1)
-        printer(2, [self.name, "stopped"])
+        print(self.name + " stopped")
 
     def stop(self):
-        self.alive = False
+        self.com.stop()
         self.join()
-
-    def criticalActionWarning(self, msg: str):
-        print("THIS IS A CRITICAL ACTION, TOKEN IN USE BY", self.name, "; A MESSAGE FROM THE LOOP :", msg)

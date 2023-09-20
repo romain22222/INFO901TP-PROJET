@@ -1,18 +1,34 @@
+from threading import Thread
 from time import sleep
+from typing import List
+
 from Process import Process
 import sys
+from Utils import setVerbose, savePrinter
 
 
-def launch(nbProcessToCreate: int, verbosityLevel: int, runningTime: int):
+def launch(nbProcessToCreate: int, runningTime: int):
+    def createProcess(x: int):
+        processes.append(Process("P" + str(x), nbProcessToCreate))
+
     processes = []
 
+    processes_launches: List[Thread] = []
+
     for i in range(nbProcessToCreate):
-        processes.append(Process("P" + str(i), nbProcessToCreate, verbosityLevel))
+        processes_launches.append(Thread(target=createProcess, args=(i,)))
+
+    for p in processes_launches:
+        p.start()
+    for p in processes_launches:
+        p.join()
 
     sleep(runningTime)
 
     for p in processes:
         p.stop()
+
+    savePrinter()
 
 
 def getParam(pos: int, default: int) -> int:
@@ -22,4 +38,5 @@ def getParam(pos: int, default: int) -> int:
 
 
 if __name__ == '__main__':
-    launch(getParam(1, 3), getParam(3, 7), getParam(2, 15))
+    setVerbose(getParam(3, 7))
+    launch(getParam(1, 3), getParam(2, 15))

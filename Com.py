@@ -1,106 +1,193 @@
-from typing import Callable
-from pyeventbus3.pyeventbus3 import *
-from Message import Message, BroadcastMessage, MessageTo, Token, TokenState, SyncingMessage
-from Process import Process
+import random
+from time import sleep
+
+from Mailbox import Mailbox
+
+from pyeventbus3.pyeventbus3 import PyBus, subscribe, Mode
+
+from Message import *
 from Utils import printer, mod
 
 
-# Cette classe doit gérer les communications de la classe Process
 class Com:
-    def __init__(self, process: Process):
-        self.process = process
-        self.horloge = 0
-        self.isSyncing = False
+    def __init__(self, nbProcess):
+        self.nbProcess = nbProcess
+        self.myId = None
+        self.listInitId = []
+
+        PyBus.Instance().register(self, self)
+        sleep(1)
+
+        self.mailbox = Mailbox()
+        self.clock = 0
+
         self.nbSync = 0
+        self.isSyncing = False
+
+        self.tokenState = TokenState.Null
+
+        self.isBlocked = False
+        self.awaitingFrom = []
+        self.recvObj = None
+
+        self.alive = True
+        if self.getMyId() == self.nbProcess - 1:
+            self.releaseSC()
+
+    def getNbProcess(self):
+        return self.nbProcess
+
+    def getMyId(self):
+        if self.myId is None:
+            self.initMyId()
+        return self.myId
+
+    def initMyId(self):
+        # 1 : Get a random id between 0 and 10000 * (nbProcess - 1)
+        # 2 : Send to all process a message with this id
+        # 3 : Wait for a given time to receive all ids
+        # 4 : if there is a conflict, go to 1
+        # 5 : else, sort the ids and take the index of the id in the list as the id of the process
+        randomNb = random.randint(0, 10000 * (self.nbProcess - 1))
+        printer(32, ["randomNb:", randomNb])
+        self.sendMessage(InitIdMessage(randomNb))
+        sleep(2)
+        if len(set(self.listInitId)) != self.nbProcess:
+            self.listInitId = []
+            return self.initMyId()
+        self.listInitId.sort()
+        self.myId = self.listInitId.index(randomNb)
+        printer(32, ["myId:", self.myId, "myRandomNb:", randomNb, "listInitId:", self.listInitId])
+
+    @subscribe(threadMode=Mode.PARALLEL, onEvent=InitIdMessage)
+    def onReceiveInitIdMessage(self, message: InitIdMessage):
+        self.listInitId.append(message.getObject())
 
     def sendMessage(self, message: Message, verbosityThreshold=1):
-        self.horloge += 1
-        message.horloge = self.horloge
-        printer(verbosityThreshold, [self.process.name, "sends:", message.getObject()])
+        if not message.is_system:
+            self.inc_clock()
+            message.horloge = self.clock
+        printer(verbosityThreshold, [message.toString()])
         PyBus.Instance().post(message)
 
-    def receiveMessage(self, message: Message, verbosityThreshold=1):
-        printer(verbosityThreshold, [self.process.name, "Processes event:", message.getObject()])
-        self.horloge = max(self.horloge, message.horloge) + 1
-
-    def sendAll(self, obj: any):
-        self.sendMessage(Message(obj))
-
-    @subscribe(threadMode=Mode.PARALLEL, onEvent=Message)
-    def process(self, event: Message):
-        self.receiveMessage(event)
-
-    def broadcast(self, obj: any):
-        self.sendMessage(BroadcastMessage(obj, self.process.name))
-
-    @subscribe(threadMode=Mode.PARALLEL, onEvent=BroadcastMessage)
-    def onBroadcast(self, event: BroadcastMessage):
-        if event.from_process != self.process.name:
-            self.receiveMessage(event)
-
-    def sendTo(self, dest: str, obj: any):
-        self.sendMessage(MessageTo(obj, self.process.name, dest))
+    def sendTo(self, obj: any, com_to: int):
+        self.sendMessage(MessageTo(obj, self.getMyId(), com_to))
 
     @subscribe(threadMode=Mode.PARALLEL, onEvent=MessageTo)
-    def onReceive(self, event: MessageTo):
-        if event.to_process == self.process.name:
-            self.receiveMessage(event)
+    def onReceive(self, message: MessageTo):
+        if message.to_id != self.getMyId():
+            return
+        if not message.is_system:
+            self.clock = max(self.clock, message.horloge) + 1
+        printer(1, [self.getMyId(), "received:", message.getObject()])
+        self.mailbox.addMessage(message)
 
-    def releaseToken(self):
-        printer(8, [self.process.myId, "release token to", mod(self.process.myId + 1, Process.nbProcessCreated)])
-        if self.process.token_state == TokenState.SC:
-            self.process.token_state = TokenState.Release
-        token = Token()
-        token.from_process = self.process.myId
-        token.to_process = mod(self.process.myId + 1, Process.nbProcessCreated)
-        token.nbSync = self.nbSync
-        self.sendMessage(token, verbosityThreshold=8)
-        self.process.token_state = TokenState.Null
-
-    def requestToken(self):
-        self.process.token_state = TokenState.Requested
-        printer(4, [self.process.name, "awaits the token"])
-        while self.process.token_state == TokenState.Requested:
-            if not self.process.alive:
+    def sendToSync(self, obj: any, com_to: int):
+        self.awaitingFrom = com_to
+        self.sendMessage(MessageSync(obj, self.getMyId(), com_to))
+        while com_to == self.awaitingFrom:
+            if not self.alive:
                 return
-        self.process.token_state = TokenState.SC
-        printer(4, [self.process.name, "has the token that it requested"])
+        printer(1, [self.getMyId(), "sent:", obj, "to", com_to])
+
+    def recevFromSync(self, com_from: int) -> any:
+        self.awaitingFrom = com_from
+        while com_from == self.awaitingFrom:
+            if not self.alive:
+                return
+        ret = self.recvObj
+        printer(1, [self.getMyId(), "received:", ret, "from", com_from])
+        self.recvObj = None
+        return ret
+
+    @subscribe(threadMode=Mode.PARALLEL, onEvent=MessageSync)
+    def onReceiveSync(self, message: MessageSync):
+        if message.to_id != self.getMyId():
+            return
+        if not message.is_system:
+            self.clock = max(self.clock, message.horloge) + 1
+        while message.from_id != self.awaitingFrom:
+            if not self.alive:
+                return
+        self.awaitingFrom = -1
+        self.recvObj = message.getObject()
+        self.sendMessage(AcknowledgementMessage(self.getMyId(), message.from_id))
+
+    def broadcastSync(self, obj: any, com_from: int):
+        if self.getMyId() == com_from:
+            for i in range(self.nbProcess):
+                if i != self.getMyId():
+                    self.sendToSync(obj, i)
+        else:
+            return self.recevFromSync(com_from)
+
+    @subscribe(threadMode=Mode.PARALLEL, onEvent=AcknowledgementMessage)
+    def onAckSync(self, event: AcknowledgementMessage):
+        if self.getMyId() == event.to_id:
+            self.awaitingFrom = -1
+
+    def synchronize(self):
+        self.isSyncing = True
+        printer(1, [self.getMyId(), "is syncing"])
+        while self.isSyncing:
+            printer(2, [self.getMyId(), "is syncing in"])
+            if not self.alive:
+                return
+        while self.nbSync != 0:
+            printer(2, [self.getMyId(), "is syncing out"])
+            if not self.alive:
+                return
+        printer(2, [self.getMyId(), "synced"])
+
+    def requestSC(self):
+        self.tokenState = TokenState.Requested
+        printer(4, [self.getMyId(), "awaits the token"])
+        while self.tokenState == TokenState.Requested:
+            if not self.alive:
+                return
+        printer(4, [self.getMyId(), "has the token that it requested"])
+
+    def broadcast(self, obj: any):
+        self.sendMessage(BroadcastMessage(obj, self.getMyId()))
+
+    @subscribe(threadMode=Mode.PARALLEL, onEvent=BroadcastMessage)
+    def onBroadcast(self, message: BroadcastMessage):
+        if message.from_id == self.getMyId():
+            return
+        if not message.is_system:
+            self.clock = max(self.clock, message.horloge) + 1
+        printer(1, [self.getMyId(), "received:", message.getObject()])
+        self.mailbox.addMessage(message)
+
+    def releaseSC(self):
+        printer(8, [self.getMyId(), "release token to", mod(self.getMyId() + 1, self.nbProcess)])
+        if self.tokenState == TokenState.SC:
+            self.tokenState = TokenState.Release
+        self.sendMessage(Token(self.getMyId(), mod(self.getMyId() + 1, self.nbProcess), self.nbSync), verbosityThreshold=8)
+        self.tokenState = TokenState.Null
+
+    def inc_clock(self):
+        self.clock += 1
+
+    def stop(self):
+        self.alive = False
 
     @subscribe(threadMode=Mode.PARALLEL, onEvent=Token)
     def onToken(self, event: Token):
-        if event.to_process == self.process.myId:
-            self.receiveMessage(event, verbosityThreshold=8)
-            if not self.process.alive:
-                return
-            if self.process.token_state == TokenState.Requested:
-                self.process.token_state = TokenState.SC
-                return
-            if self.process.isSyncing:
-                self.process.isSyncing = False
-                self.process.nbSync = mod(event.nbSync + 1, Process.nbProcessCreated)
-                if self.process.nbSync == 0:
-                    self.sendMessage(SyncingMessage(self.process.myId))
-            self.releaseToken()
-
-    def doCriticalAction(self, funcToCall: Callable, args: list):
-        self.requestToken()
-        if self.process.alive:
-            funcToCall(*args)
-            self.releaseToken()
-
-    def synchronize(self):
-        self.process.isSyncing = True
-        printer(2, [self.process.myId, "is syncing"])
-        while self.process.isSyncing:
-            if not self.process.alive:
-                return
-        while self.nbSync != 0:
-            if not self.process.alive:
-                return
-        printer(2, [self.process.myId, "synced"])
+        if event.to_id != self.getMyId() or not self.alive:
+            return
+        self.nbSync = event.nbSync
+        if self.isSyncing:
+            self.isSyncing = False
+            self.nbSync = mod(event.nbSync + 1, self.nbProcess)
+            if self.nbSync == 0:
+                self.sendMessage(SyncingMessage(self.getMyId()))
+        if self.tokenState == TokenState.Requested:
+            self.tokenState = TokenState.SC
+        else:
+            self.releaseSC()
 
     @subscribe(threadMode=Mode.PARALLEL, onEvent=SyncingMessage)
-    def onSyncing(self, event: SyncingMessage):
-        if event.from_process != self.process.myId:
-            self.receiveMessage(event)
-            self.process.nbSync = 0
+    def onSyncingMessage(self, event: SyncingMessage):
+        if event.from_id != self.getMyId():
+            self.nbSync = 0
